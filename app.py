@@ -1,55 +1,58 @@
 import streamlit as st
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 import cv2
 from datetime import datetime
 import pandas as pd
 import os
 
-# Set up the Streamlit page
-st.set_page_config(page_title="Meal Attendance", page_icon="🍽️")
-st.title("🍽️ Meal Attendance Scanner")
-
-# CSV file for storing attendance
+# CSV file setup
 log_file = "meal_attendance_log.csv"
 
-# Create CSV file if it doesn't exist
 if not os.path.exists(log_file):
     df = pd.DataFrame(columns=["Timestamp"])
     df.to_csv(log_file, index=False)
 
-# Load existing data
+# Read existing log
 df = pd.read_csv(log_file)
 attendance_count = len(df)
 
-# Setup camera and UI
-FRAME_WINDOW = st.image([])
-run = st.checkbox("Start Camera")
+st.set_page_config(page_title="Meal QR Counter", page_icon="🍽️")
+st.title("🍽️ Meal Attendance QR Scanner (Streamlit Cloud)")
 
-cap = cv2.VideoCapture(0)
-detector = cv2.QRCodeDetector()
-last_scan_time = None
+st.metric("🍽️ Total Students Counted", attendance_count)
 
-while run:
-    ret, frame = cap.read()
-    if not ret:
-        break
 
-    data, bbox, _ = detector.detectAndDecode(frame)
+# QR Scanner class
+class QRScanner(VideoTransformerBase):
+    def __init__(self):
+        self.last_scanned = None
+        self.last_scan_time = None
 
-    if data == "I came to eat":
-        current_time = datetime.now()
-        # Prevent duplicate scans within 3 seconds
-        if last_scan_time is None or (current_time - last_scan_time).seconds > 3:
-            new_entry = pd.DataFrame([[current_time.strftime("%Y-%m-%d %H:%M:%S")]], columns=["Timestamp"])
-            new_entry.to_csv(log_file, mode="a", header=False, index=False)
+    def transform(self, frame):
+        image = frame.to_ndarray(format="bgr24")
+        qr_detector = cv2.QRCodeDetector()
+        data, bbox, _ = qr_detector.detectAndDecode(image)
 
-            attendance_count += 1
-            last_scan_time = current_time
-            st.success(f"✅ Student Counted! Total Today: {attendance_count}")
+        if data == "I came to eat":
+            now = datetime.now()
+            if (
+                self.last_scan_time is None
+                or (now - self.last_scan_time).seconds > 3
+            ):
+                new_row = pd.DataFrame(
+                    [[now.strftime("%Y-%m-%d %H:%M:%S")]], columns=["Timestamp"]
+                )
+                new_row.to_csv(log_file, mode="a", header=False, index=False)
+                self.last_scan_time = now
+                st.experimental_rerun()  # update counter
 
-    FRAME_WINDOW.image(frame)
+        return image
 
-cap.release()
 
-# Show current total count
-st.markdown("---")
-st.metric("🍽️ Total Students Counted Today", attendance_count)
+webrtc_streamer(
+    key="qr",
+    video_processor_factory=QRScanner,
+    media_stream_constraints={"video": True, "audio": False},
+    async_processing=True,
+)
+
